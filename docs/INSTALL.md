@@ -4,26 +4,92 @@ Diese Anleitung gilt für Ubuntu, Debian und AlmaLinux. Seda ist ein internes
 HTTP-Backend: Es darf nicht direkt aus dem Internet erreichbar sein. SeDat,
 Apache oder Nginx übernimmt die öffentliche Edge-/TLS-Funktion.
 
-## 1. Voraussetzungen und Binary
+Die folgenden Schritte sind für eine frisch installierte VM gedacht und können
+von oben nach unten ausgeführt werden. Die Befehle verwenden `sudo`. Bei einer
+reinen Debian-Minimalinstallation ist `sudo` möglicherweise noch nicht
+vorhanden; dann zunächst mit `su -` eine Root-Shell öffnen, `sudo` installieren
+oder in dieser Anleitung `sudo` weglassen.
 
-Für ein vorhandenes, zur Distribution und CPU passendes Release-Binary sind nur
-`curl` und systemd erforderlich. Vor der Installation immer Herkunft und
-Prüfsumme des Binaries prüfen.
+## 1. Basispakete installieren
 
-Zum Bauen aus dem Quellcode wird Rust **1.75 oder neuer** benötigt:
+Seda wird derzeit aus dem Quellcode gebaut. Dafür werden Git, ein
+C/C++-Build-Werkzeugsatz, `curl`, CA-Zertifikate und Rust benötigt. `socat` ist
+optional, aber für die spätere Prüfung des Admin-Sockets praktisch.
 
 ```bash
 # Ubuntu / Debian
 sudo apt update
-sudo apt install -y build-essential curl
+sudo apt install -y git curl ca-certificates build-essential pkg-config nano socat
 
 # AlmaLinux
-sudo dnf groupinstall -y "Development Tools"
-sudo dnf install -y curl
+sudo dnf group install -y "Development Tools"
+sudo dnf install -y git curl ca-certificates pkgconf-pkg-config nano socat
 ```
 
-Rust kann distributionsweit paketiert oder für einen Build-Benutzer über
-[rustup](https://rustup.rs/) installiert werden. Im Repository:
+Die aktuellen Abhängigkeiten von Seda benötigen `pkg-config` nicht direkt; das
+Paket ist für native Cargo-Abhängigkeiten und spätere Erweiterungen
+mitinstalliert. Zur Laufzeit benötigt das fertige Seda-Binary diese
+Build-Pakete nicht.
+
+Für rustup, `git clone` und den ersten Cargo-Build benötigt der Host DNS sowie
+ausgehendes HTTPS (TCP 443), insbesondere zu GitHub, `rustup.rs`,
+`static.rust-lang.org`, `crates.io` und `static.crates.io`. Hinter einem
+HTTP(S)-Proxy vor den folgenden Befehlen zum Beispiel setzen:
+
+```bash
+export HTTPS_PROXY=http://proxy.example:3128
+export HTTP_PROXY=http://proxy.example:3128
+```
+
+Diese Variablen werden von Git, curl, rustup und Cargo verwendet. Für den
+lokalen Seda-Port 9080 ist beim Herunterladen oder Bauen keine
+Firewall-Freigabe erforderlich.
+
+Rust **1.75 oder neuer** wird am zuverlässigsten über
+[rustup](https://rustup.rs/) für den angemeldeten Build-Benutzer installiert:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"
+rustup toolchain install stable
+rustup default stable
+rustc --version
+cargo --version
+```
+
+Die von `rustc --version` gemeldete Version muss mindestens 1.75 sein.
+Distributionspakete für Rust sind ebenfalls möglich, sofern sie diese
+Mindestversion erfüllen.
+
+## 2. Repository auf den Zielhost holen
+
+Quellcode und Build-Artefakte liegen getrennt von der späteren
+Laufzeitinstallation:
+
+- `/usr/local/src/seda`: Git-Checkout und Build-Artefakte
+- `/usr/local/bin/seda`: installiertes Programm
+- `/etc/seda`: Konfiguration
+- `/var/lib/seda`: persistenter Zustand und optionale Inhalte
+- `/run/seda`: flüchtiger Admin-Socket, von systemd erzeugt
+
+Das Quellverzeichnis anlegen und das Repository über HTTPS klonen:
+
+```bash
+sudo install -d -o "$USER" -g "$(id -gn)" /usr/local/src/seda
+git clone https://github.com/WPreier/seda.git /usr/local/src/seda
+cd /usr/local/src/seda
+```
+
+Zurzeit gibt es für dieses Projekt keine veröffentlichten GitHub-Releases und
+damit auch kein offiziell bereitgestelltes Linux-Binary oder Release-Tarball.
+Ein beliebiges Binary aus anderer Quelle sollte nicht verwendet werden. Sobald
+signierte Release-Artefakte veröffentlicht werden, können sie den Build
+ersetzen; Herkunft, CPU-Architektur und Prüfsumme müssen dann vor der
+Installation geprüft werden.
+
+## 3. Bauen und Binary installieren
+
+Im geklonten Repository:
 
 ```bash
 cargo test --locked
@@ -32,11 +98,12 @@ cargo build --locked --release
 sudo install -o root -g root -m 0755 target/release/seda /usr/local/bin/seda
 ```
 
-Bei einem vorgebauten Binary ersetzt dessen Pfad
-`target/release/seda`. `Cargo.toml` ist die Quelle der Programmversion;
-`seda --version` muss dieselbe `MAJOR.MINOR.PATCH`-Version ausgeben.
+`Cargo.toml` ist die Quelle der Programmversion; `seda --version` muss dieselbe
+`MAJOR.MINOR.PATCH`-Version ausgeben. Das Quellverzeichnis wird nach der
+Installation noch benötigt, um die mitgelieferte systemd-Unit zu kopieren und
+später Updates zu bauen.
 
-## 2. Benutzer und Verzeichnisse
+## 4. Benutzer und Verzeichnisse
 
 ```bash
 sudo groupadd --system seda 2>/dev/null || true
@@ -61,7 +128,11 @@ sudo chown root:seda /etc/seda/seda.toml
 sudo chmod 0640 /etc/seda/seda.toml
 ```
 
-Danach mindestens diese Werte in `/etc/seda/seda.toml` setzen:
+Danach die Datei öffnen und mindestens diese Werte setzen:
+
+```bash
+sudo nano /etc/seda/seda.toml
+```
 
 ```toml
 [server]
@@ -78,6 +149,25 @@ allowed_peers = ["127.0.0.1/32", "::1/128"]
 protocol = "auto"
 require_proxy = false
 ```
+
+Optionale Inhalte aus dem Dateisystem können als Site eingebunden werden:
+
+```toml
+[[sites]]
+path = "/site"
+root = "/var/lib/seda/site"
+
+[[sites]]
+path = "/site/handbuch"
+root = "/srv/seda/site/handbuch"
+```
+
+`path` ist das URL-Präfix, `root` das zugehörige Inhaltsverzeichnis. Bei
+überlappenden Präfixen gewinnt das längste passende Präfix; im Beispiel wird
+`/site/handbuch` daher aus `/srv/seda/site/handbuch` bedient. Seda liest die
+Dateien einmal beim Start beziehungsweise Reload vollständig in den
+Arbeitsspeicher ein; Änderungen auf der Platte werden erst beim nächsten
+Reload sichtbar.
 
 Falls `[[sites]]` lokale Inhalte lädt, benötigt der Startprozess Leserechte auf
 diese Pfade. Geheimnisse oder private Schlüssel gehören nicht in Seda; falls
@@ -96,12 +186,13 @@ sudo /usr/local/bin/seda -f /etc/seda/seda.toml --validate
 Konfiguration mit dem eingebetteten Default; deshalb nur bewusst und nach einem
 Backup verwenden.
 
-## 3. systemd
+## 5. systemd
 
 Die mitgelieferte Unit verwendet `/usr/local/bin/seda`,
 `/etc/seda/seda.toml`, `/var/lib/seda` und `/run/seda`:
 
 ```bash
+cd /usr/local/src/seda
 sudo install -o root -g root -m 0644 deploy/seda.service \
   /etc/systemd/system/seda.service
 sudo systemctl daemon-reload
@@ -129,7 +220,7 @@ Der lokale Admin-Socket versteht `status`, `reload`, `help` und `quit`. Wegen
 Modus `0600` wird er standardmäßig als root angesprochen, zum Beispiel mit
 `sudo socat - UNIX-CONNECT:/run/seda/admin.sock`.
 
-## 4. Netzwerk, Trust und Firewall
+## 6. Netzwerk, Trust und Firewall
 
 - Bevorzugt auf `127.0.0.1:9080` lauschen. Niemals `0.0.0.0` oder eine
   öffentliche Adresse verwenden; Seda lehnt Wildcard- und öffentliche
@@ -153,7 +244,7 @@ sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=1
 sudo firewall-cmd --reload
 ```
 
-## 5. Prüfung
+## 7. Prüfung
 
 Mit der Standardkonfiguration ohne erzwungenes PROXY Protocol:
 
@@ -164,10 +255,26 @@ sudo systemctl reload seda
 sudo journalctl -u seda -n 50 --no-pager
 ```
 
+`/seda` und `/sedat` werden immer bereitgestellt, solange die eingebettete
+Dokumentation in der Konfiguration aktiviert ist:
+
+```toml
+[embedded_docs]
+enabled = true
+sedat_path = "/sedat"
+seda_path = "/seda"
+```
+
+Mit `enabled = false` werden diese beiden Pfade nicht bereitgestellt.
+
 Bei `require_proxy = true` schlägt ein direktes `curl` erwartungsgemäß fehl;
 dann über SeDat testen oder einen korrekten PROXY-v2-Testclient verwenden.
 
-## 6. Upgrade und Rollback
+## 8. Upgrade und Rollback
+
+Version 0.1.2 erhöht den Patchstand gegenüber 0.1.1. Aktualisiert wurden der
+Bare-Host-Bootstrap, ein `[[sites]]`-Beispiel, der Prüfhinweis für
+`embedded_docs` und das explizite `cd` vor der Installation der systemd-Unit.
 
 Vor jedem Update Config, Unit und das bisherige Binary sichern. Releases folgen
 SemVer; bei jedem Update/Release wird mindestens `PATCH` erhöht. Neues Binary
@@ -177,7 +284,7 @@ ausführen. Für ein Rollback das gesicherte Binary und gegebenenfalls die
 passende Config wiederherstellen und erneut validieren. Ein Binary kann nicht
 im laufenden Prozess per SIGHUP ersetzt werden.
 
-## 7. SELinux auf AlmaLinux
+## 9. SELinux auf AlmaLinux
 
 SELinux sollte aktiviert und enforcing bleiben. Standardpfade unter
 `/usr/local/bin`, `/etc`, `/var/lib` und `/run` funktionieren häufig ohne
