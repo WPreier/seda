@@ -1,11 +1,7 @@
 # Verbindung zwischen Seda und SeDat
 
-## Rollen
-
-| Komponente | Rolle | Repository |
-|------------|------|------------|
-| **SeDat** | Reverse-Proxy, TLS-Terminierung, ACME, Rate-Limiting, Routing | [sedat](https://github.com/WPreier/sedat) |
-| **Seda** | Backend, liefert rein statische HTML-Seiten ausschließlich aus dem Speicher | [seda](https://github.com/WPreier/seda) |
+SeDat übernimmt TLS, Routing und Edge-Schutz; Seda liefert statische Inhalte
+aus dem RAM. Seda erwartet den Upstream standardmäßig auf `127.0.0.1:9080`.
 
 ## Kommunikationsfluss
 
@@ -13,18 +9,33 @@
 Client
    ↓
 SeDat (HTTPS, HTTP/1.1 + HTTP/2 + HTTP/3)
-   ↓  PROXY Protocol v1/v2 (empfohlen) oder HTTP
+   ↓  PROXY Protocol v1/v2 oder plain HTTP (nur Allowlist-Peers)
 Seda (HTTP, Seiten aus Memory)
 ```
 
-## Gemeinsame Prinzipien
+## Trust 2B
 
-- Identische Config-Philosophie (versteckte aktive Kopie, Fail-Closed mit Zeilennummer, `--resetconfig`)
-- Gleiche Security-Anforderungen (Privilege Drop, Limits, non-blocking Logging)
-- Beide Binaries enthalten die Dokumentation des jeweils anderen
-- `/sedat` und `/seda` liefern die eingebettete Dokumentation (konfigurierbar, Standard: aktiv)
+Zuerst wird die echte TCP-Peer-IP gegen `trust.allowed_peers` geprüft. Nur danach
+wird ein PROXY-Header ausgewertet. `protocol = "auto"` akzeptiert v1, v2 und
+plain HTTP; `require_proxy = true` verbietet plain HTTP. `X-Forwarded-For`,
+`Forwarded` und `X-Real-IP` sind niemals Vertrauensquellen.
 
-## Empfohlene Betriebsart
+## SeDat-E2E
 
-- SeDat terminiert TLS und spricht Seda über PROXY Protocol auf localhost oder internem Netz an.
-- Seda vertraut nur den von SeDat gesetzten PROXY-Headern.
+Für Sedats `examples/e2e_seda` bzw. `mock-seda` zeigt der Backend-Upstream auf
+`127.0.0.1:9080` und sendet PROXY v2. Seda kann dafür mit dem Default gestartet
+werden; um den Header zwingend zu verlangen:
+
+```toml
+[server]
+listen = "127.0.0.1:9080"
+[trust]
+allowed_peers = ["127.0.0.1/32", "::1/128"]
+[proxy]
+protocol = "v2"
+require_proxy = true
+```
+
+Danach liefern `https://<sedat-host>/sedat` und `/seda` die eingebetteten
+Demo-Dokumentationen. Direkte Smoke-Tests gegen Seda benötigen bei dieser
+strikten Einstellung ebenfalls einen PROXY-v2-Preamble.

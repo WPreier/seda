@@ -1,0 +1,36 @@
+schema_version = 1
+
+[server]
+listen = "127.0.0.1:9080"
+state_dir = "./state"
+admin_socket = "./state/admin.sock"
+# user = "seda"
+# group = "seda"
+
+[trust]
+allowed_peers = ["127.0.0.1/32", "::1/128"]
+
+[proxy]
+# auto accepts plain HTTP and PROXY protocol v1/v2 from trusted peers.
+protocol = "auto"
+
+[embedded_docs]
+enabled = true
+sedat_path = "/sedat"
+seda_path = "/seda"
+
+# Additional filesystem trees are loaded into memory at startup.
+# [[sites]]
+# path = "/example"
+# root = "./sites/example"
+
+[limits]
+max_connections = 1024
+max_header_bytes = 16384
+max_headers = 100
+request_timeout_secs = 30
+idle_timeout_secs = 60
+max_content_bytes = 67108864
+
+[logging]
+level = "info"

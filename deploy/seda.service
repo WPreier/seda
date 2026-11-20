@@ -1,0 +1,28 @@
+[Unit]
+Description=Seda static in-memory HTTP backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/seda --config /etc/seda/seda.toml
+ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/var/lib/seda
+StateDirectory=seda
+ConfigurationDirectory=seda
+RuntimeDirectory=seda
+RuntimeDirectoryMode=0750
+User=root
+# Seda drops privileges via server.user/server.group after binding its sockets.
+WatchdogSec=30
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/seda
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+
+[Install]
+WantedBy=multi-user.target

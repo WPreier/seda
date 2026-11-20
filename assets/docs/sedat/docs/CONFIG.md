@@ -1,0 +1,105 @@
+# SeDat – Config & Lifecycle
+
+## Philosophy (aligned with Seda)
+
+- Operator edits a **user-visible** TOML file.
+- On successful validation, SeDat writes a **hidden active copy** (e.g. `.sedat.active.toml`, mode `0600`).
+- Parse/validation errors report **line number + reason**; the previous active config remains in force.
+- `--resetconfig` restores the embedded default config to the user path and re-activates it.
+- `schema_version` field enables fail-closed upgrades / migrations (see below).
+
+## Schema overview
+
+```toml
+schema_version = 1
+
+[server]
+listen = "0.0.0.0:8080"
+listen_tls = "0.0.0.0:8443"
+http_redirect_listen = "0.0.0.0:8081"  # optional :80 in prod
+user = "sedat"       # Linux privilege drop target (optional)
+group = "sedat"
+state_dir = "./state"
+admin_socket = "./state/admin.sock"  # Unix only
+
+[tls]
+enabled = false
+# cert_path / key_path for static certs; ACME overrides when enabled
+
+[acme]
+enabled = false
+directory = "staging"   # or "production" or URL
+email = "admin@example.com"
+domains = ["example.com"]
+dns_provider = "file"   # file | cloudflare
+dns_file = "./state/acme-dns-challenge.txt"
+
+[routes]
+# [[routes.hosts]]
+# host = "example.com"
+# [[routes.hosts.paths]]
+# prefix = "/"
+# upstream = "http://127.0.0.1:9080"
+
+[[routes.hosts]]
+host = "localhost"
+[[routes.hosts.paths]]
+prefix = "/"
+upstream = "http://127.0.0.1:9080"
+
+[proxy_protocol]
+outbound = "v2"          # off | v1 | v2
+inbound_enabled = false
+inbound_allowlist = []   # CIDRs, only if inbound_enabled
+
+[limits]
+max_connections = 1024
+max_header_bytes = 16384
+max_headers = 100
+max_body_bytes = 1048576
+request_timeout_secs = 30
+idle_timeout_secs = 60
+rate_limit_per_ip = 100
+rate_limit_burst = 20
+
+[embedded_docs]
+enabled = true
+sedat_path = "/sedat"
+seda_path = "/seda"
+
+[experimental]
+h3 = false
+
+[logging]
+level = "info"
+```
+
+## Validation
+
+All client-visible string fields (hosts, paths, header names, upstream URLs) are validated with **regex** and semantic checks. Failures are fail-closed.
+
+## Schema version & migration (fail-closed)
+
+- Current version: **`schema_version = 1`** (`CURRENT_SCHEMA_VERSION` in `src/config/mod.rs`).
+- Load path requires an **exact** match; newer/unknown versions refuse to start.
+- Helper: `config::migrate_toml` / CLI `sedat --migrate-config` applies the documented path when one exists (today: identity for v1; unknown versions error).
+- Upgrade procedure: read [THREAT_MODEL.md](THREAT_MODEL.md) notes → run migrate → `--validate` → reload via admin socket or restart. Never skip `schema_version`.
+
+## CLI
+
+```text
+sedat [--config PATH] [--listen ADDR] [--resetconfig] [--validate] [--migrate-config] [--version]
+```
+
+- `--validate`: load+validate and exit (non-zero on error).
+- `--resetconfig`: write default config and activate.
+- `--migrate-config`: rewrite user config through the fail-closed migrator, then exit.
+- `--listen`: override `server.listen` for quick demos.
+
+## Hot reload
+
+SIGHUP (Unix) or admin `reload` command re-reads the user config. On failure, active config is unchanged and the error is logged/returned.
+
+## Examples
+
+See `examples/config/good.toml` and `examples/config/bad_line_12.toml`.
