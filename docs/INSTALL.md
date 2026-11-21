@@ -294,9 +294,9 @@ dann über SeDat testen oder einen korrekten PROXY-v2-Testclient verwenden.
 
 ## 8. Upgrade und Rollback
 
-Version 0.2.0 erhöht wegen Schema 2 und Multi-Port-Betrieb gemäß SemVer die
-Minor-Version. Schema-1-Dateien bleiben kompatibel und werden nur in-memory als
-`site1` migriert; die Benutzerdatei wird nicht umgeschrieben.
+Version 0.2.1 verwendet Konfigurationsschema 2 und Multi-Port-Betrieb.
+Schema-1-Dateien bleiben kompatibel und werden nur in-memory als `site1`
+migriert; die Benutzerdatei wird nicht umgeschrieben.
 
 Releases folgen SemVer: Schema- und Funktionserweiterungen erhöhen `MINOR`,
 reine Dokumentationskorrekturen in einem späteren Release `PATCH`. Vor jedem
@@ -305,22 +305,29 @@ Update Config, Unit und das bisherige Binary sichern.
 Auf einem direkt installierten Debian-, Ubuntu- oder AlmaLinux-Client:
 
 ```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:$PATH"
 cd /usr/local/src/seda
-sudo -u <build-benutzer> git pull --ff-only
-sudo -u <build-benutzer> cargo build --locked --release
-sudo /usr/local/bin/seda -f /etc/seda/seda.toml --validate
-sudo install -o root -g root -m 0755 \
-  target/release/seda /usr/local/bin/seda
+
+git pull --ff-only
+cargo build --locked --release
+sudo ./target/release/seda --config /etc/seda/seda.toml --validate
+sudo install -o root -g root -m 0755 target/release/seda /usr/local/bin/seda
 sudo systemctl restart seda
+/usr/local/bin/seda --version
 sudo systemctl status seda --no-pager
 ```
 
-Wenn `/usr/local/src/seda` root gehört, können `git pull` und `cargo build`
-stattdessen direkt als root ausgeführt werden. `<build-benutzer>` ist durch den
-Besitzer des Checkouts zu ersetzen. Ein Binary kann nicht im laufenden Prozess
-per SIGHUP ersetzt werden. Änderungen an Listener-Namen, Ports oder Adressen
-erfordern ebenfalls einen Neustart; für reine Config- oder Content-Änderungen
-genügt weiterhin `systemctl reload seda`.
+Das Skript liegt auch als `scripts/update-seda.sh` im Repository und kann vom
+Besitzer des Checkouts mit `bash scripts/update-seda.sh` ausgeführt werden.
+Dieser Benutzer benötigt `sudo`-Rechte für Validierung, Installation und
+systemd-Neustart. Bei einer Root-Installation kann es direkt als root laufen;
+dann muss Cargo im `PATH` von root verfügbar sein. Ein Binary kann nicht im
+laufenden Prozess per SIGHUP ersetzt werden. Änderungen an Listener-Namen,
+Ports oder Adressen erfordern ebenfalls einen Neustart; für reine Config- oder
+Content-Änderungen genügt weiterhin `systemctl reload seda`.
 
 Schema-1-Konfigurationen funktionieren unverändert. Optional können sie
 explizit auf Schema 2 umgestellt werden: `server.listen` wird dabei zu
