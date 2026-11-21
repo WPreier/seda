@@ -8,28 +8,52 @@ liegt als `state_dir/.seda.active.toml`.
 schema_version = 2
 
 [server]
-state_dir = "./state"
-admin_socket = "./state/admin.sock"
+state_dir = "/var/lib/seda"
+admin_socket = "/run/seda/admin.sock"
+user = "seda"
+group = "seda"
 
 [trust]
-allowed_peers = ["127.0.0.1/32", "::1/128"]
+allowed_peers = ["127.0.0.1/32", "::1/128", "192.168.36.0/24"]
 
 [embedded_docs]
 enabled = true
+sedat_path = "/sedat"
+seda_path = "/seda"
 
 [proxy]
 protocol = "auto" # auto | v1 | v2 | off
 require_proxy = false
 
 [sites.site1]
-listen = "127.0.0.1:9080"
+listen = "127.0.0.1:8001"
 [[sites.site1.roots]]
-path = "/"
-root = "./site1"
+path = "/malama"
+root = "/opt/malama/theweb"
 
 [sites.site2]
-listen = "127.0.0.1:9081"
+listen = "127.0.0.1:8002"
+[[sites.site2.roots]]
+path = "/ppc"
+root = "/opt/ppc/theweb"
+
+[limits]
+max_connections = 1024
+max_header_bytes = 16384
+max_headers = 100
+request_timeout_secs = 30
+idle_timeout_secs = 60
+max_content_bytes = 67108864
+
+[logging]
+level = "info"
 ```
+
+Eine benannte Site ist eine normale Tabelle: `[sites.site1]`, **nicht**
+`[[sites.site1]]`. Nur die wiederholbaren Roots verwenden
+`[[sites.site1.roots]]`. Roots für `site2` müssen unter
+`[[sites.site2.roots]]` stehen und dürfen nicht versehentlich erneut `site1`
+zugeordnet werden. Das Trust-Feld heißt `allowed_peers`.
 
 Jede Site besitzt einen Listener und eigene Roots. Globale Trust-, Proxy- und
 Embedded-Docs-Werte gelten standardmäßig für alle Sites und können pro Site

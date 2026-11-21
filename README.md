@@ -4,7 +4,7 @@
 
 Companion-Projekt: **[SeDat](https://github.com/WPreier/sedat)** (der Reverse-Proxy).
 
-Die aktuelle Version ist **0.2.1** mit Konfigurationsschema **2**. Sie steht in
+Die aktuelle Version ist **0.2.2** mit Konfigurationsschema **2**. Sie steht in
 `Cargo.toml` und folgt [Semantic Versioning](https://semver.org/)
 (`MAJOR.MINOR.PATCH`): Neue Funktionen oder Schema-Erweiterungen erhöhen
 `MINOR`; reine Dokumentationskorrekturen in einem späteren Release erhöhen

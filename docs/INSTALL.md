@@ -128,13 +128,16 @@ sudo chown root:seda /etc/seda/seda.toml
 sudo chmod 0640 /etc/seda/seda.toml
 ```
 
-Danach die Datei öffnen und mindestens diese Werte setzen:
+Danach die Datei öffnen. Dieses vollständige Beispiel bildet zwei lokale
+Angebote ab: Malama auf Port 8001 und PPC auf Port 8002.
 
 ```bash
 sudo nano /etc/seda/seda.toml
 ```
 
 ```toml
+schema_version = 2
+
 [server]
 state_dir = "/var/lib/seda"
 admin_socket = "/run/seda/admin.sock"
@@ -142,32 +145,50 @@ user = "seda"
 group = "seda"
 
 [trust]
-allowed_peers = ["127.0.0.1/32", "::1/128"]
+allowed_peers = ["127.0.0.1/32", "::1/128", "192.168.36.0/24"]
 
 [proxy]
 protocol = "auto"
 require_proxy = false
 
+[embedded_docs]
+enabled = true
+sedat_path = "/sedat"
+seda_path = "/seda"
+
 [sites.site1]
-listen = "127.0.0.1:9080"
+listen = "127.0.0.1:8001"
+[[sites.site1.roots]]
+path = "/malama"
+root = "/opt/malama/theweb"
+
+[sites.site2]
+listen = "127.0.0.1:8002"
+[[sites.site2.roots]]
+path = "/ppc"
+root = "/opt/ppc/theweb"
+
+[limits]
+max_connections = 1024
+max_header_bytes = 16384
+max_headers = 100
+request_timeout_secs = 30
+idle_timeout_secs = 60
+max_content_bytes = 67108864
+
+[logging]
+level = "info"
 ```
 
-Optionale Inhalte aus dem Dateisystem können als Site eingebunden werden:
+Wichtig: Eine Site ist eine normale Tabelle wie `[sites.site1]`, **nicht**
+`[[sites.site1]]`. Nur ihre wiederholbaren Roots verwenden
+`[[sites.site1.roots]]`. Der Root von `site2` muss entsprechend unter
+`[[sites.site2.roots]]` stehen und darf nicht versehentlich erneut unter
+`site1` eingetragen werden. `allowed_peers` ist der gültige Name der
+Trust-Option.
 
-```toml
-[[sites.site1.roots]]
-path = "/site"
-root = "/var/lib/seda/site"
-
-[[sites.site1.roots]]
-path = "/site/handbuch"
-root = "/srv/seda/site/handbuch"
-```
-
-`path` ist das URL-Präfix, `root` das zugehörige Inhaltsverzeichnis. Bei
-überlappenden Präfixen gewinnt das längste passende Präfix; im Beispiel wird
-`/site/handbuch` daher aus `/srv/seda/site/handbuch` bedient. Seda liest die
-Dateien einmal beim Start beziehungsweise Reload vollständig in den
+`path` ist das URL-Präfix, `root` das zugehörige Inhaltsverzeichnis. Seda liest
+die Dateien einmal beim Start beziehungsweise Reload vollständig in den
 Arbeitsspeicher ein; Änderungen auf der Platte werden erst beim nächsten
 Reload sichtbar.
 
@@ -208,6 +229,9 @@ danach gemäß `server.user`/`server.group` zum unprivilegierten Benutzer. Diese
 beiden Config-Werte deshalb nicht entfernen. Bei abweichenden Installationspfaden
 `ExecStart`, `WorkingDirectory`, `StateDirectory`, `ConfigurationDirectory` und
 `RuntimeDirectory` gemeinsam anpassen.
+
+Die Unit setzt `ConfigurationDirectoryMode=0750`; damit stimmt der erwartete
+Modus mit dem oben angelegten `/etc/seda` überein.
 
 Ein Reload ist fail-closed: Eine ungültige neue Config lässt den alten Zustand
 aktiv.
@@ -294,9 +318,13 @@ dann über SeDat testen oder einen korrekten PROXY-v2-Testclient verwenden.
 
 ## 8. Upgrade und Rollback
 
-Version 0.2.1 verwendet Konfigurationsschema 2 und Multi-Port-Betrieb.
+Version 0.2.2 verwendet Konfigurationsschema 2 und Multi-Port-Betrieb.
 Schema-1-Dateien bleiben kompatibel und werden nur in-memory als `site1`
 migriert; die Benutzerdatei wird nicht umgeschrieben.
+
+Beim Upgrade von 0.2.1 auf 0.2.2 die aktualisierte systemd-Unit installieren
+und `sudo systemctl daemon-reload` ausführen; sie gleicht den Modus von
+`/etc/seda` sicher auf `0750` ab.
 
 Releases folgen SemVer: Schema- und Funktionserweiterungen erhöhen `MINOR`,
 reine Dokumentationskorrekturen in einem späteren Release `PATCH`. Vor jedem

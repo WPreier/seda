@@ -10,6 +10,7 @@ ExecReload=/bin/kill -HUP $MAINPID
 WorkingDirectory=/var/lib/seda
 StateDirectory=seda
 ConfigurationDirectory=seda
+ConfigurationDirectoryMode=0750
 RuntimeDirectory=seda
 RuntimeDirectoryMode=0750
 User=root

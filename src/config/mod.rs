@@ -80,6 +80,8 @@ pub fn parse_toml(source: &str) -> Result<SedaConfig, ConfigError> {
     }
     if version == 1 {
         migrate_v1(&mut document)?;
+    } else {
+        reject_array_sites(&document, source)?;
     }
     let config: SedaConfig = document.try_into().map_err(|error: toml::de::Error| {
         let line = error
@@ -93,6 +95,29 @@ pub fn parse_toml(source: &str) -> Result<SedaConfig, ConfigError> {
     })?;
     validate_config(&config, source)?;
     Ok(config)
+}
+
+fn reject_array_sites(document: &toml::Value, source: &str) -> Result<(), ConfigError> {
+    let Some(sites) = document.get("sites").and_then(toml::Value::as_table) else {
+        return Ok(());
+    };
+    for (name, site) in sites {
+        if site.is_array() {
+            let header = format!("[[sites.{name}]]");
+            let line = source
+                .lines()
+                .position(|line| line.trim() == header)
+                .map_or(1, |index| index + 1);
+            return Err(ConfigError::Parse {
+                line,
+                message: format!(
+                    "sites.{name} must be a table, not an array of tables; use \
+                     [sites.{name}] for the site and [[sites.{name}.roots]] for each root"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn migrate_v1(document: &mut toml::Value) -> Result<(), ConfigError> {
@@ -251,6 +276,23 @@ mod tests {
         let error = parse_toml("schema_version = 1\n[server\nlisten = \"bad\"\n")
             .expect_err("invalid TOML must fail");
         assert!(matches!(error, ConfigError::Parse { line, .. } if line >= 2));
+    }
+
+    #[test]
+    fn array_site_error_explains_table_syntax() {
+        let error = parse_toml(
+            "schema_version = 2\n\
+             [trust]\nallowed_peers = [\"127.0.0.1/32\"]\n\
+             [[sites.site1]]\nlisten = \"127.0.0.1:8001\"\n\
+             [[sites.site1.roots]]\npath = \"/malama\"\nroot = \"/opt/malama/theweb\"\n",
+        )
+        .expect_err("array-of-tables site must fail");
+        assert!(matches!(
+            error,
+            ConfigError::Parse { line: 4, message }
+                if message.contains("use [sites.site1]")
+                    && message.contains("[[sites.site1.roots]]")
+        ));
     }
 
     #[test]
