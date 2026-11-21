@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 use thiserror::Error;
 use walkdir::WalkDir;
 
-use crate::config::{EmbeddedDocsConfig, SedaConfig, SiteConfig};
+use crate::config::{ContentRootConfig, EmbeddedDocsConfig, SedaConfig, SiteConfig};
 
 include!(concat!(env!("OUT_DIR"), "/embedded_content.rs"));
 
@@ -76,10 +76,10 @@ pub enum ContentError {
 
 impl ContentStore {
     /// Load embedded docs and all configured site roots.
-    pub fn load(config: &SedaConfig) -> Result<Self, ContentError> {
+    pub fn load_for_site(config: &SedaConfig, site: &SiteConfig) -> Result<Self, ContentError> {
         Self::new(
-            &config.embedded_docs,
-            &config.sites,
+            site.effective_embedded_docs(&config.embedded_docs),
+            &site.roots,
             config.limits.max_content_bytes,
         )
     }
@@ -87,7 +87,7 @@ impl ContentStore {
     /// Construct a store from the content-related config sections.
     pub fn new(
         docs: &EmbeddedDocsConfig,
-        sites: &[SiteConfig],
+        sites: &[ContentRootConfig],
         max_content_bytes: u64,
     ) -> Result<Self, ContentError> {
         let (embedded, not_found) = load_embedded(docs);
@@ -126,7 +126,7 @@ impl ContentStore {
     /// unchanged.
     pub fn reload_sites(
         &self,
-        sites: &[SiteConfig],
+        sites: &[ContentRootConfig],
         max_content_bytes: u64,
     ) -> Result<(), ContentError> {
         let replacement = load_sites(sites, max_content_bytes)?;
@@ -141,7 +141,7 @@ impl ContentStore {
     /// Materialize a reload without changing the currently served content.
     pub fn prepare_sites(
         &self,
-        sites: &[SiteConfig],
+        sites: &[ContentRootConfig],
         max_content_bytes: u64,
     ) -> Result<PreparedSites, ContentError> {
         load_sites(sites, max_content_bytes).map(PreparedSites)
@@ -202,7 +202,7 @@ fn load_embedded(config: &EmbeddedDocsConfig) -> (HashMap<String, Content>, Cont
 }
 
 fn load_sites(
-    configs: &[SiteConfig],
+    configs: &[ContentRootConfig],
     max_content_bytes: u64,
 ) -> Result<Vec<LoadedSite>, ContentError> {
     let mut loaded = Vec::with_capacity(configs.len());
@@ -227,7 +227,7 @@ fn load_sites(
 }
 
 fn load_site(
-    config: &SiteConfig,
+    config: &ContentRootConfig,
     total_bytes: &mut u64,
     max_content_bytes: u64,
 ) -> Result<LoadedSite, ContentError> {
@@ -419,11 +419,11 @@ mod tests {
         fs::write(broad.join("index.html"), "broad").unwrap();
         fs::write(narrow.join("index.html"), "narrow").unwrap();
         let sites = vec![
-            SiteConfig {
+            ContentRootConfig {
                 path: "/site".into(),
                 root: broad.to_string_lossy().into_owned(),
             },
-            SiteConfig {
+            ContentRootConfig {
                 path: "/site/admin".into(),
                 root: narrow.to_string_lossy().into_owned(),
             },
@@ -438,7 +438,7 @@ mod tests {
         let directory = tempdir().unwrap();
         fs::create_dir_all(directory.path().join("nested")).unwrap();
         fs::write(directory.path().join("nested/page.txt"), "root").unwrap();
-        let sites = [SiteConfig {
+        let sites = [ContentRootConfig {
             path: "/".into(),
             root: directory.path().to_string_lossy().into_owned(),
         }];
@@ -450,12 +450,12 @@ mod tests {
     fn failed_reload_keeps_existing_sites() {
         let directory = tempdir().unwrap();
         fs::write(directory.path().join("index.html"), "old").unwrap();
-        let initial = [SiteConfig {
+        let initial = [ContentRootConfig {
             path: "/site".into(),
             root: directory.path().to_string_lossy().into_owned(),
         }];
         let store = ContentStore::new(&EmbeddedDocsConfig::default(), &initial, 1024).unwrap();
-        let invalid = [SiteConfig {
+        let invalid = [ContentRootConfig {
             path: "/site".into(),
             root: "../escape".into(),
         }];

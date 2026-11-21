@@ -14,7 +14,8 @@ Seda (HTTP, Seiten aus Memory)
 
 ## Trust und E2E
 
-Seda lauscht standardmäßig auf `127.0.0.1:9080`. Nur
+Sedas `site1` lauscht standardmäßig auf `127.0.0.1:9080`; weitere Sites können
+weitere Upstreams bedienen. Nur
 `trust.allowed_peers` dürfen verbinden. Für Sedats `examples/e2e_seda` oder
 `mock-seda` zeigt der Upstream auf diesen Port und sendet PROXY v2. Mit
 `protocol = "v2"` und `require_proxy = true` lässt sich dessen Emission

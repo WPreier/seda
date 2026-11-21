@@ -17,8 +17,8 @@ use thiserror::Error;
 /// Name of the validated active configuration copy.
 pub const ACTIVE_CONFIG_NAME: &str = ".seda.active.toml";
 
-/// Current supported configuration schema.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// Current configuration schema. Schema 1 is accepted and normalized to this version.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Configuration load or activation failure.
 #[derive(Debug, Error)]
@@ -29,7 +29,7 @@ pub enum ConfigError {
     Parse { line: usize, message: String },
     #[error("validation error at line {line}: {message}")]
     Validation { line: usize, message: String },
-    #[error("unsupported schema_version {found}; supported: {CURRENT_SCHEMA_VERSION}")]
+    #[error("unsupported schema_version {found}; supported: 1 and {CURRENT_SCHEMA_VERSION}")]
     SchemaVersion { found: u32 },
 }
 
@@ -60,7 +60,7 @@ pub struct ConfigCandidate {
 
 /// Parse and validate TOML without activating it.
 pub fn parse_toml(source: &str) -> Result<SedaConfig, ConfigError> {
-    let config: SedaConfig = toml::from_str(source).map_err(|error| {
+    let mut document: toml::Value = toml::from_str(source).map_err(|error| {
         let line = error
             .span()
             .map(|span| offset_to_line(source, span.start))
@@ -70,13 +70,67 @@ pub fn parse_toml(source: &str) -> Result<SedaConfig, ConfigError> {
             message: error.message().to_owned(),
         }
     })?;
-    if config.schema_version != CURRENT_SCHEMA_VERSION {
-        return Err(ConfigError::SchemaVersion {
-            found: config.schema_version,
-        });
+    let version = document
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    if version != 1 && version != CURRENT_SCHEMA_VERSION {
+        return Err(ConfigError::SchemaVersion { found: version });
     }
+    if version == 1 {
+        migrate_v1(&mut document)?;
+    }
+    let config: SedaConfig = document.try_into().map_err(|error: toml::de::Error| {
+        let line = error
+            .span()
+            .map(|span| offset_to_line(source, span.start))
+            .unwrap_or(1);
+        ConfigError::Parse {
+            line,
+            message: error.message().to_owned(),
+        }
+    })?;
     validate_config(&config, source)?;
     Ok(config)
+}
+
+fn migrate_v1(document: &mut toml::Value) -> Result<(), ConfigError> {
+    let root = document.as_table_mut().ok_or_else(|| ConfigError::Parse {
+        line: 1,
+        message: "configuration root must be a table".into(),
+    })?;
+    let listen = root
+        .entry("server")
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::Parse {
+            line: 1,
+            message: "server must be a table".into(),
+        })?
+        .remove("listen")
+        .unwrap_or_else(|| toml::Value::String(default_listen()));
+    let roots = match root.remove("sites") {
+        Some(toml::Value::Array(roots)) => roots,
+        Some(_) => {
+            return Err(ConfigError::Parse {
+                line: 1,
+                message: "schema_version 1 sites must be an array of tables".into(),
+            });
+        }
+        None => Vec::new(),
+    };
+    let mut site1 = toml::map::Map::new();
+    site1.insert("listen".into(), listen);
+    site1.insert("roots".into(), toml::Value::Array(roots));
+    let mut sites = toml::map::Map::new();
+    sites.insert("site1".into(), toml::Value::Table(site1));
+    root.insert("sites".into(), toml::Value::Table(sites));
+    root.insert(
+        "schema_version".into(),
+        toml::Value::Integer(CURRENT_SCHEMA_VERSION.into()),
+    );
+    Ok(())
 }
 
 /// Validate a user config and copy it to `.seda.active.toml`.
@@ -178,6 +232,18 @@ mod tests {
     fn embedded_default_is_valid() {
         let config = parse_toml(crate::DEFAULT_CONFIG_TOML).expect("default config must validate");
         assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn schema_v1_is_migrated_to_site1_in_memory() {
+        let config = parse_toml(
+            "schema_version = 1\n[server]\nlisten = \"127.0.0.1:9444\"\n\
+             [[sites]]\npath = \"/legacy\"\nroot = \".\"\n",
+        )
+        .unwrap();
+        assert_eq!(config.schema_version, 2);
+        assert_eq!(config.sites["site1"].listen, "127.0.0.1:9444");
+        assert_eq!(config.sites["site1"].roots[0].path, "/legacy");
     }
 
     #[test]

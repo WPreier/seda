@@ -5,8 +5,11 @@
 liegt als `state_dir/.seda.active.toml`.
 
 ```toml
+schema_version = 2
+
 [server]
-listen = "127.0.0.1:9080"
+state_dir = "./state"
+admin_socket = "./state/admin.sock"
 
 [trust]
 allowed_peers = ["127.0.0.1/32", "::1/128"]
@@ -17,8 +20,23 @@ enabled = true
 [proxy]
 protocol = "auto" # auto | v1 | v2 | off
 require_proxy = false
+
+[sites.site1]
+listen = "127.0.0.1:9080"
+[[sites.site1.roots]]
+path = "/"
+root = "./site1"
+
+[sites.site2]
+listen = "127.0.0.1:9081"
 ```
 
-Öffentliche/Wildcard-Binds, leere Peer-Allowlist, unbekannte Felder und
-ungültige Site-Pfade werden abgelehnt. Admin-`reload` und SIGHUP behalten bei
-jedem Fehler Config, aktive Kopie und Content.
+Jede Site besitzt einen Listener und eigene Roots. Globale Trust-, Proxy- und
+Embedded-Docs-Werte gelten standardmäßig für alle Sites und können pro Site
+überschrieben werden. Öffentliche/Wildcard-Binds, doppelte Listener, leere
+Peer-Allowlist, unbekannte Felder und ungültige Site-Pfade werden abgelehnt.
+
+Schema 1 bleibt kompatibel: `server.listen` und alte `[[sites]]` werden
+in-memory zu Listener und Roots von `site1`; die Datei bleibt unverändert.
+Admin-`reload` und SIGHUP behalten bei jedem Fehler Config, aktive Kopie und
+Content. Listener-Änderungen benötigen einen Neustart.

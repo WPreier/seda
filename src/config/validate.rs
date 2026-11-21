@@ -1,11 +1,12 @@
 //! Semantic validation for Seda configuration.
 
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 
 use regex::Regex;
 
-use super::schema::SedaConfig;
+use super::schema::{EmbeddedDocsConfig, ProxyConfig, SedaConfig, TrustConfig};
 
 /// Validation failure with a best-effort source line.
 #[derive(Debug, Clone)]
@@ -30,22 +31,48 @@ fn error(source: &str, needle: &str, message: impl Into<String>) -> ValidationEr
 
 /// Validate a parsed config without changing the active configuration.
 pub fn validate_config(cfg: &SedaConfig, source: &str) -> Result<(), ValidationError> {
-    let listen = cfg.server.listen.parse::<SocketAddr>().map_err(|_| {
-        error(
-            source,
-            &cfg.server.listen,
-            format!("invalid server.listen `{}`", cfg.server.listen),
-        )
-    })?;
-    if !is_safe_bind_address(listen.ip()) {
+    if cfg.sites.is_empty() {
         return Err(error(
             source,
-            &cfg.server.listen,
-            format!(
-                "server.listen address `{}` is not loopback, private, or link-local",
-                listen.ip()
-            ),
+            "[sites]",
+            "schema_version 2 requires at least one site",
         ));
+    }
+    let mut listens = HashSet::new();
+    for (name, site) in &cfg.sites {
+        let listen = site.listen.parse::<SocketAddr>().map_err(|_| {
+            error(
+                source,
+                &site.listen,
+                format!("invalid sites.{name}.listen `{}`", site.listen),
+            )
+        })?;
+        if !is_safe_bind_address(listen.ip()) {
+            return Err(error(
+                source,
+                &site.listen,
+                format!(
+                    "sites.{name}.listen address `{}` is not loopback, private, or link-local",
+                    listen.ip()
+                ),
+            ));
+        }
+        if !listens.insert(listen) {
+            return Err(error(
+                source,
+                &site.listen,
+                format!("duplicate listen address `{listen}`"),
+            ));
+        }
+        validate_trust(source, site.effective_trust(&cfg.trust))?;
+        validate_proxy(source, site.effective_proxy(&cfg.proxy))?;
+        validate_embedded_docs(source, site.effective_embedded_docs(&cfg.embedded_docs))?;
+        for root in &site.roots {
+            validate_url_path(source, "sites roots.path", &root.path)?;
+            if root.root.trim().is_empty() {
+                return Err(error(source, "root", "sites roots.root must not be empty"));
+            }
+        }
     }
     if cfg.server.state_dir.trim().is_empty() {
         return Err(error(
@@ -79,65 +106,9 @@ pub fn validate_config(cfg: &SedaConfig, source: &str) -> Result<(), ValidationE
         ));
     }
 
-    if cfg.trust.allowed_peers.is_empty() {
-        return Err(error(
-            source,
-            "allowed_peers",
-            "trust.allowed_peers must not be empty (fail-closed)",
-        ));
-    }
-    for peer in &cfg.trust.allowed_peers {
-        parse_cidr(peer).map_err(|reason| {
-            error(
-                source,
-                peer,
-                format!("invalid trusted peer `{peer}`: {reason}"),
-            )
-        })?;
-    }
-
-    match cfg.proxy.protocol.as_str() {
-        "auto" | "v1" | "v2" | "off" => {}
-        protocol => {
-            return Err(error(
-                source,
-                protocol,
-                format!("proxy.protocol must be auto|v1|v2|off, got `{protocol}`"),
-            ));
-        }
-    }
-    if cfg.proxy.require_proxy && cfg.proxy.protocol == "off" {
-        return Err(error(
-            source,
-            "require_proxy",
-            "proxy.require_proxy cannot be true when proxy.protocol is off",
-        ));
-    }
-
-    validate_url_path(
-        source,
-        "embedded_docs.sedat_path",
-        &cfg.embedded_docs.sedat_path,
-    )?;
-    validate_url_path(
-        source,
-        "embedded_docs.seda_path",
-        &cfg.embedded_docs.seda_path,
-    )?;
-    if cfg.embedded_docs.sedat_path == cfg.embedded_docs.seda_path {
-        return Err(error(
-            source,
-            &cfg.embedded_docs.seda_path,
-            "embedded documentation paths must be distinct",
-        ));
-    }
-
-    for site in &cfg.sites {
-        validate_url_path(source, "sites.path", &site.path)?;
-        if site.root.trim().is_empty() {
-            return Err(error(source, "root", "sites.root must not be empty"));
-        }
-    }
+    validate_trust(source, &cfg.trust)?;
+    validate_proxy(source, &cfg.proxy)?;
+    validate_embedded_docs(source, &cfg.embedded_docs)?;
 
     if cfg.limits.max_connections == 0
         || cfg.limits.max_header_bytes == 0
@@ -164,6 +135,67 @@ pub fn validate_config(cfg: &SedaConfig, source: &str) -> Result<(), ValidationE
         }
     }
 
+    Ok(())
+}
+
+fn validate_trust(source: &str, trust: &TrustConfig) -> Result<(), ValidationError> {
+    if trust.allowed_peers.is_empty() {
+        return Err(error(
+            source,
+            "allowed_peers",
+            "trust.allowed_peers must not be empty (fail-closed)",
+        ));
+    }
+    for peer in &trust.allowed_peers {
+        parse_cidr(peer).map_err(|reason| {
+            error(
+                source,
+                peer,
+                format!("invalid trusted peer `{peer}`: {reason}"),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_proxy(source: &str, proxy: &ProxyConfig) -> Result<(), ValidationError> {
+    match proxy.protocol.as_str() {
+        "auto" | "v1" | "v2" | "off" => {}
+        protocol => {
+            return Err(error(
+                source,
+                protocol,
+                format!("proxy.protocol must be auto|v1|v2|off, got `{protocol}`"),
+            ));
+        }
+    }
+    if proxy.require_proxy && proxy.protocol == "off" {
+        return Err(error(
+            source,
+            "require_proxy",
+            "proxy.require_proxy cannot be true when proxy.protocol is off",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_embedded_docs(
+    source: &str,
+    embedded_docs: &EmbeddedDocsConfig,
+) -> Result<(), ValidationError> {
+    validate_url_path(
+        source,
+        "embedded_docs.sedat_path",
+        &embedded_docs.sedat_path,
+    )?;
+    validate_url_path(source, "embedded_docs.seda_path", &embedded_docs.seda_path)?;
+    if embedded_docs.sedat_path == embedded_docs.seda_path {
+        return Err(error(
+            source,
+            &embedded_docs.seda_path,
+            "embedded documentation paths must be distinct",
+        ));
+    }
     Ok(())
 }
 
@@ -284,7 +316,8 @@ mod tests {
     #[test]
     fn config_rejects_global_listener() {
         let error = parse_toml(
-            "schema_version = 1\n[server]\nlisten = \"8.8.8.8:8080\"\nstate_dir = \"state\"\n",
+            "schema_version = 2\n[server]\nstate_dir = \"state\"\n\
+             [sites.site1]\nlisten = \"8.8.8.8:8080\"\n",
         )
         .unwrap_err();
         assert!(error
@@ -294,9 +327,22 @@ mod tests {
 
     #[test]
     fn require_proxy_conflicts_with_off_mode() {
-        let error =
-            parse_toml("schema_version = 1\n[proxy]\nprotocol = \"off\"\nrequire_proxy = true\n")
-                .unwrap_err();
+        let error = parse_toml(
+            "schema_version = 2\n[proxy]\nprotocol = \"off\"\nrequire_proxy = true\n\
+             [sites.site1]\nlisten = \"127.0.0.1:9080\"\n",
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("cannot be true"));
+    }
+
+    #[test]
+    fn rejects_duplicate_listener() {
+        let error = parse_toml(
+            "schema_version = 2\n\
+             [sites.site1]\nlisten = \"127.0.0.1:9080\"\n\
+             [sites.site2]\nlisten = \"127.0.0.1:9080\"\n",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate listen"));
     }
 }

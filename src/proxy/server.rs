@@ -16,13 +16,16 @@ use crate::content::{Content, ContentStore};
 use super::{probe, ProxyMode};
 
 /// Serve static content until the listener fails.
-pub fn serve(listener: TcpListener, runtime: RuntimeState) -> io::Result<()> {
-    info!(listen = %listener.local_addr()?, "Seda listening");
+pub fn serve(listener: TcpListener, site_name: String, runtime: RuntimeState) -> io::Result<()> {
+    info!(site = %site_name, listen = %listener.local_addr()?, "Seda listening");
 
     for accepted in listener.incoming() {
         match accepted {
             Ok(mut stream) => {
-                let config = runtime.load_config();
+                let Some((config, content)) = runtime.load_site(&site_name) else {
+                    warn!(site = %site_name, "listener site missing from runtime configuration");
+                    continue;
+                };
                 let Some(permit) = ConnectionPermit::try_acquire(
                     &runtime.active_connections,
                     config.limits.max_connections,
@@ -39,10 +42,10 @@ pub fn serve(listener: TcpListener, runtime: RuntimeState) -> io::Result<()> {
                     );
                     continue;
                 };
-                let content = Arc::clone(&runtime.content);
+                let site_name = site_name.clone();
                 thread::spawn(move || {
                     let _permit = permit;
-                    if let Err(error) = handle(stream, &config, &content) {
+                    if let Err(error) = handle(stream, &config, &site_name, &content) {
                         debug!(%error, "connection closed with an error");
                     }
                 });
@@ -92,8 +95,12 @@ impl Drop for ConnectionPermit {
 fn handle(
     mut stream: TcpStream,
     config: &SedaConfig,
+    site_name: &str,
     content_store: &ContentStore,
 ) -> io::Result<()> {
+    let site = config.sites.get(site_name).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "listener site missing from config")
+    })?;
     let peer = stream.peer_addr()?;
     // Connections are deliberately closed after one request, so the smaller
     // request/idle bound governs the entire socket lifetime.
@@ -106,14 +113,16 @@ fn handle(
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
-    if !ip_in_allowlist(peer.ip(), &config.trust.allowed_peers) {
+    let trust = site.effective_trust(&config.trust);
+    if !ip_in_allowlist(peer.ip(), &trust.allowed_peers) {
         warn!(%peer, "rejected peer outside trust allowlist");
         send_plain_response(&mut stream, 403, "Forbidden", b"forbidden")?;
         return Ok(());
     }
 
-    let mode = ProxyMode::from_config(&config.proxy.protocol);
-    let parsed = match probe(&mut stream, peer, mode, config.proxy.require_proxy) {
+    let proxy = site.effective_proxy(&config.proxy);
+    let mode = ProxyMode::from_config(&proxy.protocol);
+    let parsed = match probe(&mut stream, peer, mode, proxy.require_proxy) {
         Ok(parsed) => parsed,
         Err(error) => {
             warn!(%peer, %error, "rejected connection preamble");
@@ -419,7 +428,7 @@ mod tests {
     #[test]
     fn serves_embedded_content_and_embedded_not_found_page() {
         let store = ContentStore::new(&EmbeddedDocsConfig::default(), &[], 1024).unwrap();
-        let config: SedaConfig = toml::from_str(crate::DEFAULT_CONFIG_TOML).unwrap();
+        let config = crate::config::parse_toml(crate::DEFAULT_CONFIG_TOML).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
 
@@ -427,7 +436,7 @@ mod tests {
             scope.spawn(|| {
                 for _ in 0..3 {
                     let (stream, _) = listener.accept().unwrap();
-                    handle(stream, &config, &store).unwrap();
+                    handle(stream, &config, "site1", &store).unwrap();
                 }
             });
 

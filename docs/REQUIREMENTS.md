@@ -1,7 +1,10 @@
 # Seda – Requirements
 
 - Hybrid-Content: Build-time eingebettete Markdown-Dokumentation plus optionale
-  `[[sites]]`, die vor der Aktivierung vollständig in den RAM geladen werden.
+  `[[sites.<name>.roots]]`, die pro Listener vor der Aktivierung vollständig
+  in den RAM geladen werden.
+- Ein Prozess bindet alle benannten Site-Listener und verwaltet sie über einen
+  Admin-Socket, einen Reload und eine systemd-Unit.
 - Demo-Routen `/sedat` und `/seda`; unbekannte Pfade erhalten die eingebettete
   404-Seite mit Status 404.
 - Trust 2B: plain HTTP sowie PROXY Protocol v1/v2 nur von

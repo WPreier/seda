@@ -2,7 +2,8 @@
 
 Seda ist ein synchrones, begrenztes HTTP/1.1-Backend für SeDat:
 
-1. Der Listener bindet nur Loopback-, private oder Link-Local-Adressen.
+1. Alle benannten Site-Listener binden nur Loopback-, private oder
+   Link-Local-Adressen; der Start bindet alle oder schlägt vollständig fehl.
 2. Die Transport-Peer-IP muss in `trust.allowed_peers` liegen.
 3. Ein begrenzter Parser erkennt plain HTTP, PROXY v1 oder PROXY v2 gemäß
    `proxy.protocol` und `require_proxy`.
@@ -12,7 +13,8 @@ Seda ist ein synchrones, begrenztes HTTP/1.1-Backend für SeDat:
 ## Hybrid-Content
 
 `build.rs` konvertiert die Markdown-Bäume von Seda und SeDat zu HTML und bettet
-sie zusammen mit der 404-Seite in das Binary ein. Optionale `[[sites]]` werden
+sie zusammen mit der 404-Seite in das Binary ein. Optionale
+`[[sites.<name>.roots]]` werden pro Listener
 beim Start vollständig gelesen, auf Root-/Symlink-Escapes und Gesamtgröße
 geprüft und anschließend ohne Dateisystemzugriff ausgeliefert. Der längste
 Mount-Präfix gewinnt; ein Site-Mount kann `/` sein.

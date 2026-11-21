@@ -1,5 +1,7 @@
 //! Serde schema for Seda TOML configuration.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Root configuration document.
@@ -15,20 +17,17 @@ pub struct SedaConfig {
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub embedded_docs: EmbeddedDocsConfig,
-    #[serde(default)]
-    pub sites: Vec<SiteConfig>,
+    pub sites: BTreeMap<String, SiteConfig>,
     #[serde(default)]
     pub limits: LimitsConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
 }
 
-/// Listener and state paths.
+/// Process-wide state paths and privilege settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    #[serde(default = "default_listen")]
-    pub listen: String,
     #[serde(default = "default_state_dir")]
     pub state_dir: String,
     /// Unix-domain control socket.
@@ -42,7 +41,7 @@ pub struct ServerConfig {
     pub group: Option<String>,
 }
 
-fn default_listen() -> String {
+pub(super) fn default_listen() -> String {
     "127.0.0.1:9080".into()
 }
 
@@ -57,7 +56,6 @@ fn default_admin_socket() -> String {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            listen: default_listen(),
             state_dir: default_state_dir(),
             admin_socket: default_admin_socket(),
             user: None,
@@ -144,10 +142,45 @@ impl Default for EmbeddedDocsConfig {
     }
 }
 
-/// Optional filesystem site loaded into memory during startup.
+/// One named listener and its independently loaded content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SiteConfig {
+    pub listen: String,
+    #[serde(default)]
+    pub roots: Vec<ContentRootConfig>,
+    /// Optional site-local override; global trust is the default.
+    #[serde(default)]
+    pub trust: Option<TrustConfig>,
+    /// Optional site-local override; global proxy policy is the default.
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
+    /// Optional site-local override; global embedded-doc settings are the default.
+    #[serde(default)]
+    pub embedded_docs: Option<EmbeddedDocsConfig>,
+}
+
+impl SiteConfig {
+    pub fn effective_trust<'a>(&'a self, global: &'a TrustConfig) -> &'a TrustConfig {
+        self.trust.as_ref().unwrap_or(global)
+    }
+
+    pub fn effective_proxy<'a>(&'a self, global: &'a ProxyConfig) -> &'a ProxyConfig {
+        self.proxy.as_ref().unwrap_or(global)
+    }
+
+    pub fn effective_embedded_docs<'a>(
+        &'a self,
+        global: &'a EmbeddedDocsConfig,
+    ) -> &'a EmbeddedDocsConfig {
+        self.embedded_docs.as_ref().unwrap_or(global)
+    }
+}
+
+/// Filesystem tree mounted into one listener's URL space.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContentRootConfig {
     pub path: String,
     pub root: String,
 }

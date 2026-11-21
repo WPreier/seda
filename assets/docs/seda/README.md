@@ -6,7 +6,8 @@ Companion-Projekt: **[SeDat](https://github.com/WPreier/sedat)** (der Reverse-Pr
 
 ## Verbindung zu SeDat
 
-Der Default-Upstream ist `127.0.0.1:9080`. Trust 2B akzeptiert plain HTTP und
+`site1` nutzt standardmäßig `127.0.0.1:9080`; weitere Sites können in demselben
+Prozess auf zusätzlichen Ports lauschen. Trust 2B akzeptiert plain HTTP und
 PROXY v1/v2 ausschließlich von `trust.allowed_peers`; Forwarded-HTTP-Header sind
 keine Vertrauensquelle.
 
@@ -19,7 +20,8 @@ Details: [docs/CONNECTION.md](docs/CONNECTION.md)
 ## Inhalt und Betrieb
 
 Die Dokumentationen unter `/sedat` und `/seda` sind eingebettet. Optionale
-`[[sites]]` werden vollständig in den RAM geladen. `seda -f PATH` wählt die
+`[[sites.<name>.roots]]` werden pro Listener vollständig in den RAM geladen.
+`seda -f PATH` wählt die
 Config; Unix unterstützt fail-closed Reload über Admin-Socket und SIGHUP.
 Öffentliche und Wildcard-Binds werden abgelehnt.
 

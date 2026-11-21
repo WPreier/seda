@@ -136,7 +136,6 @@ sudo nano /etc/seda/seda.toml
 
 ```toml
 [server]
-listen = "127.0.0.1:9080"
 state_dir = "/var/lib/seda"
 admin_socket = "/run/seda/admin.sock"
 user = "seda"
@@ -148,16 +147,19 @@ allowed_peers = ["127.0.0.1/32", "::1/128"]
 [proxy]
 protocol = "auto"
 require_proxy = false
+
+[sites.site1]
+listen = "127.0.0.1:9080"
 ```
 
 Optionale Inhalte aus dem Dateisystem können als Site eingebunden werden:
 
 ```toml
-[[sites]]
+[[sites.site1.roots]]
 path = "/site"
 root = "/var/lib/seda/site"
 
-[[sites]]
+[[sites.site1.roots]]
 path = "/site/handbuch"
 root = "/srv/seda/site/handbuch"
 ```
@@ -169,7 +171,7 @@ Dateien einmal beim Start beziehungsweise Reload vollständig in den
 Arbeitsspeicher ein; Änderungen auf der Platte werden erst beim nächsten
 Reload sichtbar.
 
-Falls `[[sites]]` lokale Inhalte lädt, benötigt der Startprozess Leserechte auf
+Falls `[[sites.site1.roots]]` lokale Inhalte lädt, benötigt der Startprozess Leserechte auf
 diese Pfade. Geheimnisse oder private Schlüssel gehören nicht in Seda; falls
 eine lokale Erweiterung dennoch Secret-Dateien verwendet, sollten sie
 `root:seda`, Modus `0600` (oder höchstens `0640`, wenn Seda sie lesen muss)
@@ -210,6 +212,26 @@ beiden Config-Werte deshalb nicht entfernen. Bei abweichenden Installationspfade
 Ein Reload ist fail-closed: Eine ungültige neue Config lässt den alten Zustand
 aktiv.
 
+### Mehrere Ports
+
+Für mehrere Inhaltsangebote ist ein einzelner Seda-Prozess mit weiteren
+`[sites.<name>]`-Tabellen der bevorzugte Betrieb:
+
+```toml
+[sites.site2]
+listen = "127.0.0.1:9081"
+[[sites.site2.roots]]
+path = "/"
+root = "/var/lib/seda/site2"
+```
+
+Alle Sites teilen sich Admin-Socket, Reload, Limits und systemd-Unit. Trust,
+Proxy und Embedded-Docs können pro Site überschrieben werden. Änderungen an
+Listener-Namen oder -Adressen brauchen einen Neustart; Content-Reloads bleiben
+fail-closed. Mehrere Prozesse sind nur für echte Isolationsanforderungen
+sinnvoll und benötigen getrennte Configs, State-Verzeichnisse, Admin-Sockets
+und systemd-Units.
+
 ```bash
 sudo systemctl reload seda
 # alternativ:
@@ -222,7 +244,7 @@ Modus `0600` wird er standardmäßig als root angesprochen, zum Beispiel mit
 
 ## 6. Netzwerk, Trust und Firewall
 
-- Bevorzugt auf `127.0.0.1:9080` lauschen. Niemals `0.0.0.0` oder eine
+- Bevorzugt auf Loopback-Adressen wie `127.0.0.1:9080` und `:9081` lauschen. Niemals `0.0.0.0` oder eine
   öffentliche Adresse verwenden; Seda lehnt Wildcard- und öffentliche
   Bind-Adressen zusätzlich selbst ab.
 - Bei SeDat auf demselben Host bleibt `allowed_peers` auf Loopback. SeDat kann
@@ -272,17 +294,69 @@ dann über SeDat testen oder einen korrekten PROXY-v2-Testclient verwenden.
 
 ## 8. Upgrade und Rollback
 
-Version 0.1.2 erhöht den Patchstand gegenüber 0.1.1. Aktualisiert wurden der
-Bare-Host-Bootstrap, ein `[[sites]]`-Beispiel, der Prüfhinweis für
-`embedded_docs` und das explizite `cd` vor der Installation der systemd-Unit.
+Version 0.2.0 erhöht wegen Schema 2 und Multi-Port-Betrieb gemäß SemVer die
+Minor-Version. Schema-1-Dateien bleiben kompatibel und werden nur in-memory als
+`site1` migriert; die Benutzerdatei wird nicht umgeschrieben.
 
-Vor jedem Update Config, Unit und das bisherige Binary sichern. Releases folgen
-SemVer; bei jedem Update/Release wird mindestens `PATCH` erhöht. Neues Binary
-zuerst mit `--version` und die bestehende Config mit `--validate` prüfen, dann
-atomar unter `/usr/local/bin/seda` austauschen und `systemctl restart seda`
-ausführen. Für ein Rollback das gesicherte Binary und gegebenenfalls die
-passende Config wiederherstellen und erneut validieren. Ein Binary kann nicht
-im laufenden Prozess per SIGHUP ersetzt werden.
+Releases folgen SemVer: Schema- und Funktionserweiterungen erhöhen `MINOR`,
+reine Dokumentationskorrekturen in einem späteren Release `PATCH`. Vor jedem
+Update Config, Unit und das bisherige Binary sichern.
+
+Auf einem direkt installierten Debian-, Ubuntu- oder AlmaLinux-Client:
+
+```bash
+cd /usr/local/src/seda
+sudo -u <build-benutzer> git pull --ff-only
+sudo -u <build-benutzer> cargo build --locked --release
+sudo /usr/local/bin/seda -f /etc/seda/seda.toml --validate
+sudo install -o root -g root -m 0755 \
+  target/release/seda /usr/local/bin/seda
+sudo systemctl restart seda
+sudo systemctl status seda --no-pager
+```
+
+Wenn `/usr/local/src/seda` root gehört, können `git pull` und `cargo build`
+stattdessen direkt als root ausgeführt werden. `<build-benutzer>` ist durch den
+Besitzer des Checkouts zu ersetzen. Ein Binary kann nicht im laufenden Prozess
+per SIGHUP ersetzt werden. Änderungen an Listener-Namen, Ports oder Adressen
+erfordern ebenfalls einen Neustart; für reine Config- oder Content-Änderungen
+genügt weiterhin `systemctl reload seda`.
+
+Schema-1-Konfigurationen funktionieren unverändert. Optional können sie
+explizit auf Schema 2 umgestellt werden: `server.listen` wird dabei zu
+`sites.site1.listen`, globale `proxy`-, `trust`- und `embedded_docs`-Werte
+bleiben bestehen, und bisherige `[[sites]]`-Einträge werden als
+`[[sites.site1.roots]]` notiert. Danach erneut `--validate` ausführen.
+
+Die aktiven Sites anschließend einzeln prüfen, zum Beispiel:
+
+```bash
+curl --fail --show-error http://127.0.0.1:9080/seda
+curl --fail --show-error http://127.0.0.1:9080/sedat
+curl --fail --show-error http://127.0.0.1:9081/
+```
+
+Für ein Rollback das gesicherte Binary und gegebenenfalls die passende Config
+wiederherstellen, validieren und den Dienst neu starten.
+
+### Updates ausrollen (apt/dnf u.ä.)
+
+Ein offizielles Seda-Paket für apt oder dnf gibt es derzeit nicht. Für eine
+Host-Flotte bieten sich, nach Einstiegshürde geordnet, diese Wege an:
+
+1. **Skript mit Git, Cargo und Neustart:** Die obigen Schritte automatisieren.
+   Das ist der einfachste heutige Weg.
+2. **Eigene `.deb`-/`.rpm`-Pakete:** Mit `cargo-deb`, `cargo-generate-rpm` oder
+   `fpm` bauen und über ein privates apt-/dnf-Repository verteilen oder direkt
+   auf die Hosts kopieren.
+3. **Ansible oder Salt:** Checkout, Build beziehungsweise Paketinstallation,
+   Config und Dienstzustand auf identischen Hosts deklarativ verwalten.
+4. **Später GitHub Releases:** Vorgebaute musl- oder glibc-Binaries samt
+   Prüfsummen veröffentlichen und von dort kontrolliert verteilen.
+
+Für den jetzigen Stand empfiehlt sich Variante 1, bei mehreren gleichartigen
+Hosts Variante 3. Der Aufwand für apt/dnf lohnt sich vor allem, wenn viele
+Hosts regulär über den Paketmanager aktualisiert werden sollen.
 
 ## 9. SELinux auf AlmaLinux
 

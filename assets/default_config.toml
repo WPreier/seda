@@ -1,7 +1,6 @@
-schema_version = 1
+schema_version = 2
 
 [server]
-listen = "127.0.0.1:9080"
 state_dir = "./state"
 admin_socket = "./state/admin.sock"
 # user = "seda"
@@ -19,10 +18,20 @@ enabled = true
 sedat_path = "/sedat"
 seda_path = "/seda"
 
-# Additional filesystem trees are loaded into memory at startup.
-# [[sites]]
+# Each named site owns one listener and its in-memory content.
+[sites.site1]
+listen = "127.0.0.1:9080"
+
+# Additional filesystem trees are loaded into this site's memory at startup.
+# [[sites.site1.roots]]
 # path = "/example"
 # root = "./sites/example"
+
+# [sites.site2]
+# listen = "127.0.0.1:9081"
+# [[sites.site2.roots]]
+# path = "/"
+# root = "./sites/site2"
 
 [limits]
 max_connections = 1024

@@ -1,7 +1,9 @@
 //! Seda binary entrypoint.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::Context;
 use clap::Parser;
@@ -60,6 +62,9 @@ fn main() -> anyhow::Result<()> {
 
     let mut active = config::load_and_activate(&cli.config, None)?;
     if let Some(listen) = cli.listen {
+        if active.config.sites.len() != 1 {
+            anyhow::bail!("--listen can only override a configuration with exactly one site");
+        }
         let address = listen
             .parse::<SocketAddr>()
             .with_context(|| format!("invalid --listen address `{listen}`"))?;
@@ -69,7 +74,13 @@ fn main() -> anyhow::Result<()> {
                 address.ip()
             );
         }
-        active.config.server.listen = listen;
+        active
+            .config
+            .sites
+            .values_mut()
+            .next()
+            .expect("one site was checked")
+            .listen = listen;
     }
 
     init_logging(&active.config.logging.level);
@@ -90,13 +101,18 @@ fn init_logging(level: &str) {
 }
 
 fn run(config: SedaConfig, user_config: PathBuf) -> anyhow::Result<()> {
-    let address: SocketAddr = config
-        .server
-        .listen
-        .parse()
-        .context("validated server.listen became invalid")?;
-    let content = ContentStore::load(&config).context("failed to load static content")?;
-    let listener = bind_listener(address)?;
+    let mut content = BTreeMap::new();
+    let mut listeners = Vec::new();
+    for (name, site) in &config.sites {
+        let address: SocketAddr = site
+            .listen
+            .parse()
+            .with_context(|| format!("validated sites.{name}.listen became invalid"))?;
+        let store = ContentStore::load_for_site(&config, site)
+            .with_context(|| format!("failed to load static content for site `{name}`"))?;
+        content.insert(name.clone(), Arc::new(store));
+        listeners.push((name.clone(), address, bind_listener(address)?));
+    }
     let admin = AdminServer::bind(std::path::Path::new(&config.server.admin_socket))
         .context("failed to bind admin socket")?;
     hardening::drop_privileges(&config.server).context("failed to drop privileges")?;
@@ -111,11 +127,24 @@ fn run(config: SedaConfig, user_config: PathBuf) -> anyhow::Result<()> {
 
     info!(
         version = VERSION,
-        listen = %address,
-        files = runtime.content.len(),
+        listeners = listeners.len(),
+        files = runtime.content_len(),
         "starting Seda"
     );
-    proxy::serve(listener, runtime).context("listener failed")
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for (name, address, listener) in listeners {
+        let runtime = runtime.clone();
+        let sender = sender.clone();
+        std::thread::spawn(move || {
+            let result = proxy::serve(listener, name.clone(), runtime)
+                .with_context(|| format!("listener `{name}` ({address}) failed"));
+            let _ = sender.send(result);
+        });
+    }
+    drop(sender);
+    receiver
+        .recv()
+        .context("all listener threads stopped unexpectedly")?
 }
 
 #[cfg(unix)]

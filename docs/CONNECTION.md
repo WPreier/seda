@@ -1,7 +1,9 @@
 # Verbindung zwischen Seda und SeDat
 
 SeDat übernimmt TLS, Routing und Edge-Schutz; Seda liefert statische Inhalte
-aus dem RAM. Seda erwartet den Upstream standardmäßig auf `127.0.0.1:9080`.
+aus dem RAM. Sedas `site1` erwartet den Upstream standardmäßig auf
+`127.0.0.1:9080`; weitere SeDat-Upstreams können auf zusätzliche Site-Listener
+desselben Seda-Prozesses zeigen.
 
 ## Kommunikationsfluss
 
@@ -27,7 +29,7 @@ Für Sedats `examples/e2e_seda` bzw. `mock-seda` zeigt der Backend-Upstream auf
 werden; um den Header zwingend zu verlangen:
 
 ```toml
-[server]
+[sites.site1]
 listen = "127.0.0.1:9080"
 [trust]
 allowed_peers = ["127.0.0.1/32", "::1/128"]

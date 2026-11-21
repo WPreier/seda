@@ -1,5 +1,6 @@
 //! Local administration and the shared fail-closed reload path.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicUsize;
@@ -18,24 +19,50 @@ use crate::content::ContentStore;
 /// Runtime state shared by HTTP workers, admin clients, and signal handlers.
 #[derive(Clone)]
 pub struct RuntimeState {
-    pub config: Arc<RwLock<Arc<SedaConfig>>>,
-    pub content: Arc<ContentStore>,
+    snapshot: Arc<RwLock<Arc<RuntimeSnapshot>>>,
     pub active_connections: Arc<AtomicUsize>,
 }
 
+struct RuntimeSnapshot {
+    config: Arc<SedaConfig>,
+    content: BTreeMap<String, Arc<ContentStore>>,
+}
+
 impl RuntimeState {
-    pub fn new(config: SedaConfig, content: ContentStore) -> Self {
+    pub fn new(config: SedaConfig, content: BTreeMap<String, Arc<ContentStore>>) -> Self {
         Self {
-            config: Arc::new(RwLock::new(Arc::new(config))),
-            content: Arc::new(content),
+            snapshot: Arc::new(RwLock::new(Arc::new(RuntimeSnapshot {
+                config: Arc::new(config),
+                content,
+            }))),
             active_connections: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn load_config(&self) -> Arc<SedaConfig> {
+        Arc::clone(&self.load_snapshot().config)
+    }
+
+    pub fn load_site(&self, name: &str) -> Option<(Arc<SedaConfig>, Arc<ContentStore>)> {
+        let snapshot = self.load_snapshot();
+        snapshot
+            .content
+            .get(name)
+            .map(|content| (Arc::clone(&snapshot.config), Arc::clone(content)))
+    }
+
+    pub fn content_len(&self) -> usize {
+        self.load_snapshot()
+            .content
+            .values()
+            .map(|store| store.len())
+            .sum()
+    }
+
+    fn load_snapshot(&self) -> Arc<RuntimeSnapshot> {
         Arc::clone(
             &self
-                .config
+                .snapshot
                 .read()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         )
@@ -64,22 +91,37 @@ impl ReloadController {
     pub fn reload(&self) -> Result<(), String> {
         let _guard = self.lock.lock().unwrap_or_else(|error| error.into_inner());
         let candidate = config::prepare_reload(&self.user_config).map_err(|e| e.to_string())?;
-        let sites = self
-            .runtime
-            .content
-            .prepare_sites(
-                &candidate.config.sites,
-                candidate.config.limits.max_content_bytes,
-            )
-            .map_err(|e| e.to_string())?;
+        let current = self.runtime.load_config();
+        let current_listeners: BTreeMap<_, _> = current
+            .sites
+            .iter()
+            .map(|(name, site)| (name, &site.listen))
+            .collect();
+        let next_listeners: BTreeMap<_, _> = candidate
+            .config
+            .sites
+            .iter()
+            .map(|(name, site)| (name, &site.listen))
+            .collect();
+        if current_listeners != next_listeners {
+            return Err("listener names/addresses cannot change on reload; restart Seda".into());
+        }
+        let mut content = BTreeMap::new();
+        for (name, site) in &candidate.config.sites {
+            let store =
+                ContentStore::load_for_site(&candidate.config, site).map_err(|e| e.to_string())?;
+            content.insert(name.clone(), Arc::new(store));
+        }
         let next_config = candidate.config.clone();
         config::activate_candidate(candidate, &self.state_dir).map_err(|e| e.to_string())?;
-        self.runtime.content.commit_sites(sites);
         *self
             .runtime
-            .config
+            .snapshot
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(next_config);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(RuntimeSnapshot {
+            config: Arc::new(next_config),
+            content,
+        });
         info!("configuration and in-memory sites reloaded");
         Ok(())
     }
@@ -171,8 +213,13 @@ fn handle_client(
                     "OK seda {} connections={} files={} listen={}\n",
                     crate::VERSION,
                     runtime.active_connections.load(Ordering::Acquire),
-                    runtime.content.len(),
-                    config.server.listen
+                    runtime.content_len(),
+                    config
+                        .sites
+                        .values()
+                        .map(|site| site.listen.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
                 )
             }
             "reload" => match reload.reload() {
@@ -202,17 +249,29 @@ mod tests {
         let state_dir = directory.path().join("state");
         std::fs::write(&user_path, crate::DEFAULT_CONFIG_TOML).unwrap();
         let active = config::load_and_activate(&user_path, Some(&state_dir)).unwrap();
-        let content = ContentStore::load(&active.config).unwrap();
+        let content = active
+            .config
+            .sites
+            .iter()
+            .map(|(name, site)| {
+                (
+                    name.clone(),
+                    Arc::new(ContentStore::load_for_site(&active.config, site).unwrap()),
+                )
+            })
+            .collect();
         let runtime = RuntimeState::new(active.config, content);
         let reload = ReloadController::new(user_path.clone(), state_dir.clone(), runtime.clone());
 
         let invalid_site = format!(
-            "{}\n[[sites]]\npath = \"/bad\"\nroot = \"../escape\"\n",
+            "{}\n[[sites.site1.roots]]\npath = \"/bad\"\nroot = \"../escape\"\n",
             crate::DEFAULT_CONFIG_TOML
         );
         std::fs::write(user_path, invalid_site).unwrap();
         assert!(reload.reload().is_err());
-        assert!(runtime.load_config().sites.is_empty());
-        assert!(config::load_active(&state_dir).unwrap().sites.is_empty());
+        assert!(runtime.load_config().sites["site1"].roots.is_empty());
+        assert!(config::load_active(&state_dir).unwrap().sites["site1"]
+            .roots
+            .is_empty());
     }
 }
