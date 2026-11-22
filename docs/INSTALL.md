@@ -233,8 +233,21 @@ beiden Config-Werte deshalb nicht entfernen. Bei abweichenden Installationspfade
 Die Unit setzt `ConfigurationDirectoryMode=0750`; damit stimmt der erwartete
 Modus mit dem oben angelegten `/etc/seda` überein.
 
+Nach einem `git pull` muss eine geänderte Unit erneut installiert und systemd
+darüber informiert werden:
+
+```bash
+cd /usr/local/src/seda
+sudo install -o root -g root -m 0644 deploy/seda.service \
+  /etc/systemd/system/seda.service
+sudo systemctl daemon-reload
+```
+
 Ein Reload ist fail-closed: Eine ungültige neue Config lässt den alten Zustand
-aktiv.
+aktiv. `ExecReload` verwendet den systemd-Präfix `+`, damit das HUP-Signal trotz
+des Privilegwechsels des laufenden Seda-Prozesses mit vollen Rechten gesendet
+wird. Damit ist der zuvor mögliche Fehler `kill: ... Die Operation ist nicht
+erlaubt` (`EPERM`) behoben.
 
 ### Mehrere Ports
 
@@ -251,15 +264,18 @@ root = "/var/lib/seda/site2"
 
 Alle Sites teilen sich Admin-Socket, Reload, Limits und systemd-Unit. Trust,
 Proxy und Embedded-Docs können pro Site überschrieben werden. Änderungen an
-Listener-Namen oder -Adressen brauchen einen Neustart; Content-Reloads bleiben
-fail-closed. Mehrere Prozesse sind nur für echte Isolationsanforderungen
+der Listen-Topologie (Site-Namen, Ports oder Adressen) brauchen einen Neustart.
+Für Content- und sonstige Config-Änderungen genügt ein Reload; Content-Reloads
+bleiben fail-closed. Mehrere Prozesse sind nur für echte Isolationsanforderungen
 sinnvoll und benötigen getrennte Configs, State-Verzeichnisse, Admin-Sockets
 und systemd-Units.
 
 ```bash
 sudo systemctl reload seda
-# alternativ:
-sudo kill -HUP "$(systemctl show -p MainPID --value seda)"
+# Workaround, falls noch eine alte Unit installiert ist:
+sudo systemctl restart seda
+# Reload ohne systemd über den lokalen Admin-Socket:
+printf 'reload\n' | sudo socat - UNIX-CONNECT:/run/seda/admin.sock
 ```
 
 Der lokale Admin-Socket versteht `status`, `reload`, `help` und `quit`. Wegen
@@ -318,13 +334,14 @@ dann über SeDat testen oder einen korrekten PROXY-v2-Testclient verwenden.
 
 ## 8. Upgrade und Rollback
 
-Version 0.2.2 verwendet Konfigurationsschema 2 und Multi-Port-Betrieb.
+Version 0.2.3 verwendet Konfigurationsschema 2 und Multi-Port-Betrieb.
 Schema-1-Dateien bleiben kompatibel und werden nur in-memory als `site1`
 migriert; die Benutzerdatei wird nicht umgeschrieben.
 
-Beim Upgrade von 0.2.1 auf 0.2.2 die aktualisierte systemd-Unit installieren
-und `sudo systemctl daemon-reload` ausführen; sie gleicht den Modus von
-`/etc/seda` sicher auf `0750` ab.
+Beim Upgrade auf 0.2.3 die aktualisierte systemd-Unit nach dem `git pull`
+installieren und `sudo systemctl daemon-reload` ausführen. Sie erwartet für
+`/etc/seda` den Modus `0750` und führt `ExecReload` mit den zum Signalisieren
+des privilegiert gestarteten Prozesses nötigen Rechten aus.
 
 Releases folgen SemVer: Schema- und Funktionserweiterungen erhöhen `MINOR`,
 reine Dokumentationskorrekturen in einem späteren Release `PATCH`. Vor jedem
@@ -343,6 +360,14 @@ git pull --ff-only
 cargo build --locked --release
 sudo ./target/release/seda --config /etc/seda/seda.toml --validate
 sudo install -o root -g root -m 0755 target/release/seda /usr/local/bin/seda
+
+unit_source=deploy/seda.service
+unit_target=/etc/systemd/system/seda.service
+if ! sudo cmp -s "$unit_source" "$unit_target"; then
+  sudo install -o root -g root -m 0644 "$unit_source" "$unit_target"
+  sudo systemctl daemon-reload
+fi
+
 sudo systemctl restart seda
 /usr/local/bin/seda --version
 sudo systemctl status seda --no-pager
